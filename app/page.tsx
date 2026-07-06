@@ -12,7 +12,43 @@ const MODES: { id: Mode; name: string; desc: string }[] = [
   { id: "vanishing", name: "Vanishing", desc: "Only three marks each. A fourth fades your oldest." },
   { id: "ultimate",  name: "Ultimate",  desc: "Nine boards in one. Your move sends your rival on." },
 ];
-const oppLabel = (o: Opponent) => (o === "oracle" ? "The Oracle" : "Two Players");
+const oppLabel = (o: Opponent) => (o === "oracle" ? "The Oracle" : "Multiplayer");
+
+const CONGRATS = [
+  "Three in a row. The board is yours.",
+  "A clean line, beautifully played.",
+  "Victory, drawn in gold.",
+  "The dragon nods in respect.",
+  "Masterful. The board bent to you.",
+  "You saw the path and took it.",
+  "A win worthy of the mist.",
+  "Precision. The board had no answer.",
+  "The gold holds. Well played.",
+  "Triumph, quiet and complete.",
+  "You wrote the ending yourself.",
+  "A finish with no wasted move.",
+];
+const INSULTS = [
+  "The Oracle expected no less.",
+  "Outmaneuvered. The mist keeps its secrets.",
+  "So close. The dragon barely stirred.",
+  "A valiant loss is still a loss.",
+  "The Oracle has seen this ending before.",
+  "Try again. The board is patient.",
+  "Defeat sharpens the blade. Sharpen away.",
+  "The dragon yawns. Again?",
+  "Your strategy amused the Oracle.",
+  "Not today. Perhaps not tomorrow either.",
+  "The mist claims another challenger.",
+  "Close enough to see the win, not to hold it.",
+];
+const DRAWS = [
+  "Stillness. Neither prevails.",
+  "A balanced board. No victor.",
+  "Two minds, one deadlock.",
+  "The mist settles on no one.",
+];
+const pick = (a: string[]) => a[Math.floor(Math.random() * a.length)];
 
 type Over = { who: Player | null; line?: number[] } | null;
 
@@ -46,6 +82,8 @@ export default function Home() {
   const [s, setS] = useState<State>(base);
   const [idx, setIdx] = useState(0); // carousel index
   const [swapping, setSwapping] = useState(false);
+  const [endMsg, setEndMsg] = useState("");
+  const [showEnd, setShowEnd] = useState(false);
   const oracleActedPly = useRef(-1);
 
   const isOracleTurn = s.screen === "play" && s.opponent === "oracle" && s.turn === "O" && !s.over;
@@ -123,6 +161,17 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOracleTurn, s.ply]);
 
+  // ---- end-of-game line, revealed after the winning stroke draws ----
+  useEffect(() => {
+    if (!s.over) { setEndMsg(""); setShowEnd(false); return; }
+    const who = s.over.who;
+    const poolPick = who === null ? DRAWS : (who === "O" && s.opponent === "oracle") ? INSULTS : CONGRATS;
+    setEndMsg(pick(poolPick));
+    const t = setTimeout(() => setShowEnd(true), 850);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.over]);
+
   // -------------------------------------------------------------------------
   const goldTurn = s.turn === "X";
   const vanishingIdx = s.mode === "vanishing" && !s.over && s.queue[s.turn].length === 3 ? s.queue[s.turn][0] : -1;
@@ -180,15 +229,30 @@ export default function Home() {
               : <Grid s={s} vanishingIdx={vanishingIdx} onCell={play3} disabled={isOracleTurn} />}
           </div>
 
-          <div className="status">
-            {s.over && (s.over.who === null
-              ? <>A still board. <span className="dim">Neither prevails.</span></>
-              : s.over.who === "X"
-                ? <><span className="gold">Gold</span> takes the board.</>
-                : <><span className="red">{s.opponent === "oracle" ? "The Oracle" : "Cinnabar"}</span> prevails.</>)}
-          </div>
+          {!s.over && <button className="newgame" onClick={reset}>New game</button>}
 
-          <button className="newgame" onClick={reset}>New game</button>
+          {s.over && showEnd && (() => {
+            const who = s.over.who;
+            const win = who === "X" || (who === "O" && s.opponent !== "oracle");
+            const headline = who === null
+              ? "A still board"
+              : s.opponent === "oracle"
+                ? (who === "X" ? "You win" : "The Oracle wins")
+                : (who === "X" ? "Gold prevails" : "Cinnabar prevails");
+            const tone = who === null ? "draw" : win ? "win" : "loss";
+            return (
+              <div className="endwrap">
+                <div className="endcard">
+                  <div className={`endresult ${tone}`}>{headline}</div>
+                  <p className="endmsg">{endMsg}</p>
+                  <div className="endactions">
+                    <button className="endnew" onClick={reset}>New game</button>
+                    <button className="endhome" onClick={home}>‹ Home</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </main>
       )}
     </>
@@ -207,7 +271,7 @@ function Grid({ s, vanishingIdx, onCell, disabled }:
           {v && <Mark key={`${i}-${v}`} type={v} fading={i === vanishingIdx} />}
         </button>
       ))}
-      {s.over?.line && <WinStroke line={s.over.line} seal />}
+      {s.over?.line && s.over.who && <WinStroke line={s.over.line} who={s.over.who} />}
     </div>
   );
 }
@@ -232,21 +296,22 @@ function Ultimate({ s, onCell }: { s: State; onCell: (b: number, i: number) => v
           </div>
         );
       })}
-      {s.metaLine && <WinStroke line={s.metaLine} seal />}
+      {s.metaLine && s.over?.who && <WinStroke line={s.metaLine} who={s.over.who} />}
     </div>
   );
 }
 
-// gold brush stroke through the winning three + a small cinnabar seal
-function WinStroke({ line, seal }: { line: number[]; seal?: boolean }) {
+// brush stroke through the winning three — gold if Gold won, red if the Oracle/Cinnabar won — plus a contrasting seal
+function WinStroke({ line, who }: { line: number[]; who: Player }) {
   const c = (i: number) => ({ x: ((i % 3) + 0.5) / 3 * 100, y: (Math.floor(i / 3) + 0.5) / 3 * 100 });
   const a = c(line[0]), b = c(line[2]);
-  const ex = (b.x - a.x) * 0.14, ey = (b.y - a.y) * 0.14; // extend past the end cells
-  const mx = (a.x + b.x) / 2 + (b.y - a.y) * 0.03, my = (a.y + b.y) / 2 - (b.x - a.x) * 0.03; // slight brush bow
+  const ex = (b.x - a.x) * 0.14, ey = (b.y - a.y) * 0.14;
+  const mx = (a.x + b.x) / 2 + (b.y - a.y) * 0.03, my = (a.y + b.y) / 2 - (b.x - a.x) * 0.03;
+  const k = who === "X" ? "x" : "o";
   return (
     <svg className="winstroke" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-      <path className="ws draw" d={`M ${a.x - ex} ${a.y - ey} Q ${mx} ${my} ${b.x + ex} ${b.y + ey}`} />
-      {seal && <circle className="seal" cx={b.x + ex} cy={b.y + ey} r="5" />}
+      <path className={`ws ${k} draw`} d={`M ${a.x - ex} ${a.y - ey} Q ${mx} ${my} ${b.x + ex} ${b.y + ey}`} />
+      <circle className={`seal ${k}`} cx={b.x + ex} cy={b.y + ey} r="5" />
     </svg>
   );
 }
