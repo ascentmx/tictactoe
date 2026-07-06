@@ -1,0 +1,7 @@
+Put your two images here:
+
+  dragon.jpg  — title screen art
+  clouds.jpg  — cloudy background behind the board
+
+They are referenced in app/globals.css (--hero-image / --play-image).
+Missing files fail silently; the painted ink mist shows underneath.
