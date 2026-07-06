@@ -87,14 +87,14 @@ body{ font-family:var(--serif); color:var(--ink); background:var(--mist);
   text-transform:uppercase; color:rgba(255,255,255,.62); text-shadow:0 1px 3px rgba(0,0,0,.5); }
 .disc-desc{ position:absolute; bottom:-1.5em; left:50%; transform:translateX(-50%);
   width:82%; text-align:center; font-style:italic; font-size:.92rem; line-height:1.25;
-  color:rgba(245,243,238,.92); text-shadow:0 1px 6px rgba(0,0,0,.6);
+  color:#C84A3A; text-shadow:0 1px 6px rgba(0,0,0,.55), 0 0 2px rgba(0,0,0,.4);
   animation:breathe 5s ease-in-out infinite alternate; }
 .disc-name.swap, .disc-desc.swap{ opacity:0; }
 @keyframes breathe{ from{ opacity:.55; } to{ opacity:1; } }
 
 .tagline{ position:absolute; bottom:15vh; left:0; right:0; text-align:center;
-  font-size:clamp(1rem,4vw,1.2rem); font-style:italic; color:rgba(245,243,238,.9);
-  letter-spacing:.02em; text-shadow:0 1px 7px rgba(0,0,0,.55); }
+  font-size:clamp(1rem,4vw,1.2rem); font-style:italic; color:var(--gold-deep);
+  letter-spacing:.02em; text-shadow:0 1px 4px rgba(255,255,255,.35); }
 
 /* ============================= PLAY ============================= */
 .play{ position:relative; height:100dvh; display:flex; flex-direction:column; }

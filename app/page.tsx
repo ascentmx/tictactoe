@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Cell, Mode, Opponent, Player,
   winner, botMove3, ultimateBotMove, miniPlayable, UltimateState,
@@ -46,6 +46,7 @@ export default function Home() {
   const [s, setS] = useState<State>(base);
   const [idx, setIdx] = useState(0); // carousel index
   const [swapping, setSwapping] = useState(false);
+  const oracleActedPly = useRef(-1);
 
   const isOracleTurn = s.screen === "play" && s.opponent === "oracle" && s.turn === "O" && !s.over;
 
@@ -57,13 +58,12 @@ export default function Home() {
       setSwapping(false);
     }, 170);
   };
-  const begin = () => setS({ ...base, mode: MODES[idx].id, opponent: "oracle", screen: "play" });
+  const begin = () => { oracleActedPly.current = -1; setS({ ...base, mode: MODES[idx].id, opponent: "oracle", screen: "play" }); };
 
   // ---- navigation ----
   const home = () => setS((st) => ({ ...st, screen: "landing" }));
-  const reset = () => setS((st) => ({ ...base, mode: st.mode, opponent: st.opponent, screen: "play" }));
-  const switchOpponent = () =>
-    setS((st) => ({ ...base, mode: st.mode, opponent: st.opponent === "oracle" ? "human" : "oracle", screen: "play" }));
+  const reset = () => { oracleActedPly.current = -1; setS((st) => ({ ...base, mode: st.mode, opponent: st.opponent, screen: "play" })); };
+  const switchOpponent = () => { oracleActedPly.current = -1; setS((st) => ({ ...base, mode: st.mode, opponent: st.opponent === "oracle" ? "human" : "oracle", screen: "play" })); };
 
   // ---- commits (pure) ----
   function commit3(st: State, i: number): State {
@@ -99,19 +99,29 @@ export default function Home() {
       turn: over ? st.turn : st.turn === "X" ? "O" : "X", over, ply: st.ply + 1 };
   }
 
-  // ---- move + silent Oracle reply ----
-  const oracleReplies = (after: State): State => {
-    if (after.opponent !== "oracle" || after.over || after.turn !== "O") return after;
-    if (after.mode === "ultimate") {
-      const us: UltimateState = { boards: after.ub, boardsWon: after.boardsWon, active: after.active };
-      const mv = ultimateBotMove(us, "O", "X");
-      return mv ? commitU(after, mv.b, mv.i) : after;
-    }
-    const i = botMove3(after.board, "O", "X");
-    return i >= 0 ? commit3(after, i) : after;
-  };
-  const play3 = (i: number) => { if (!isOracleTurn && !s.over) setS((st) => oracleReplies(commit3(st, i))); };
-  const playU = (b: number, i: number) => { if (!isOracleTurn && !s.over) setS((st) => oracleReplies(commitU(st, b, i))); };
+  // ---- human moves ----
+  const play3 = (i: number) => { if (!isOracleTurn && !s.over) setS((st) => commit3(st, i)); };
+  const playU = (b: number, i: number) => { if (!isOracleTurn && !s.over) setS((st) => commitU(st, b, i)); };
+
+  // ---- Oracle replies after a short, deliberate pause ----
+  useEffect(() => {
+    if (!isOracleTurn || oracleActedPly.current === s.ply) return;
+    oracleActedPly.current = s.ply;
+    const t = setTimeout(() => {
+      setS((st) => {
+        if (st.over || st.turn !== "O" || st.opponent !== "oracle") return st;
+        if (st.mode === "ultimate") {
+          const us: UltimateState = { boards: st.ub, boardsWon: st.boardsWon, active: st.active };
+          const mv = ultimateBotMove(us, "O", "X");
+          return mv ? commitU(st, mv.b, mv.i) : st;
+        }
+        const i = botMove3(st.board, "O", "X");
+        return i >= 0 ? commit3(st, i) : st;
+      });
+    }, 600);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOracleTurn, s.ply]);
 
   // -------------------------------------------------------------------------
   const goldTurn = s.turn === "X";
