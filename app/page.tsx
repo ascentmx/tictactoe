@@ -1,12 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import {
   Cell, Mode, Opponent, Player,
   winner, botMove3, ultimateBotMove, miniPlayable, UltimateState,
 } from "@/lib/game";
 
 // ---------------------------------------------------------------------------
+const MODES: { id: Mode; name: string; desc: string }[] = [
+  { id: "classic",   name: "Classic",   desc: "The game you know. Three in a row wins." },
+  { id: "vanishing", name: "Vanishing", desc: "Only three marks each. A fourth fades your oldest." },
+  { id: "ultimate",  name: "Ultimate",  desc: "Nine boards in one. Your move sends your rival on." },
+];
+const oppLabel = (o: Opponent) => (o === "oracle" ? "The Oracle" : "Two Players");
+
 type Over = { who: Player | null; line?: number[] } | null;
 
 type State = {
@@ -14,10 +21,8 @@ type State = {
   mode: Mode;
   opponent: Opponent;
   turn: Player;
-  // 3x3 modes
   board: Cell[];
   queue: { X: number[]; O: number[] };
-  // ultimate
   ub: Cell[][];
   boardsWon: Cell[];
   active: number | null;
@@ -26,104 +31,41 @@ type State = {
   ply: number;
 };
 
-const fresh3 = (): Pick<State, "board" | "queue"> => ({
-  board: Array(9).fill(null),
-  queue: { X: [], O: [] },
-});
-const freshU = (): Pick<State, "ub" | "boardsWon" | "active" | "metaLine"> => ({
+const fresh3 = () => ({ board: Array(9).fill(null) as Cell[], queue: { X: [] as number[], O: [] as number[] } });
+const freshU = () => ({
   ub: Array.from({ length: 9 }, () => Array(9).fill(null) as Cell[]),
-  boardsWon: Array(9).fill(null),
-  active: null,
-  metaLine: null,
+  boardsWon: Array(9).fill(null) as Cell[], active: null as number | null, metaLine: null as number[] | null,
 });
-
-const initial: State = {
-  screen: "landing", mode: "classic", opponent: "human", turn: "X",
+const base: State = {
+  screen: "landing", mode: "classic", opponent: "oracle", turn: "X",
   ...fresh3(), ...freshU(), over: null, ply: 0,
 };
 
-const CLIENT_FALLBACK: Record<string, string[]> = {
-  move: ["You reach where I have already been.", "Predictable.", "A small stone against a mountain."],
-  win: ["The board clears. As does your ambition.", "You lost to yourself, not to me."],
-  loss: ["Fortune, not skill. Sit again."],
-  draw: ["Stillness. Neither of us moved the mountain."],
-};
-const cannedLine = (e: string) => {
-  const a = CLIENT_FALLBACK[e] ?? CLIENT_FALLBACK.move;
-  return a[Math.floor(Math.random() * a.length)];
-};
-
-// ---------------------------------------------------------------------------
+// ===========================================================================
 export default function Home() {
-  const [s, setS] = useState<State>(initial);
-  const [oracleLine, setOracleLine] = useState<string | null>(null);
-  const oracleActedPly = useRef<number>(-1);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [s, setS] = useState<State>(base);
+  const [idx, setIdx] = useState(0); // carousel index
+  const [swapping, setSwapping] = useState(false);
 
-  const isOracleTurn =
-    s.screen === "play" && s.opponent === "oracle" && s.turn === "O" && !s.over;
+  const isOracleTurn = s.screen === "play" && s.opponent === "oracle" && s.turn === "O" && !s.over;
 
-  // --- Oracle taunt (server route → falls back to canned) ------------------
-  const summon = async (event: "move" | "win" | "loss" | "draw") => {
-    const grid = s.board.map((v) => (v === "X" ? "Gold" : v === "O" ? "Oracle" : "·"));
-    setOracleLine("…");
-    try {
-      const res = await fetch("/api/oracle", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode: s.mode, grid, event }),
-      });
-      const data = await res.json();
-      setOracleLine(data.line || cannedLine(event));
-    } catch {
-      setOracleLine(cannedLine(event));
-    }
+  // ---- carousel ----
+  const cycle = (dir: 1 | -1) => {
+    setSwapping(true);
+    setTimeout(() => {
+      setIdx((i) => (i + dir + MODES.length) % MODES.length);
+      setSwapping(false);
+    }, 170);
   };
+  const begin = () => setS({ ...base, mode: MODES[idx].id, opponent: "oracle", screen: "play" });
 
-  // --- Oracle move (reliable local logic) ----------------------------------
-  useEffect(() => {
-    if (!isOracleTurn) return;
-    if (oracleActedPly.current === s.ply) return;
-    oracleActedPly.current = s.ply;
-    timer.current = setTimeout(() => {
-      setS((st) => {
-        if (st.over || st.turn !== "O") return st;
-        if (st.mode === "ultimate") {
-          const us: UltimateState = { boards: st.ub, boardsWon: st.boardsWon, active: st.active };
-          const mv = ultimateBotMove(us, "O", "X");
-          if (!mv) return st;
-          return commitUltimate(st, mv.b, mv.i);
-        } else {
-          const i = botMove3(st.board, "O", "X");
-          if (i < 0) return st;
-          return commit3(st, i);
-        }
-      });
-    }, 600);
-    return () => { if (timer.current) clearTimeout(timer.current); };
-  }, [isOracleTurn, s.ply]);
+  // ---- navigation ----
+  const home = () => setS((st) => ({ ...st, screen: "landing" }));
+  const reset = () => setS((st) => ({ ...base, mode: st.mode, opponent: st.opponent, screen: "play" }));
+  const switchOpponent = () =>
+    setS((st) => ({ ...base, mode: st.mode, opponent: st.opponent === "oracle" ? "human" : "oracle", screen: "play" }));
 
-  // announce results / oracle moves via a taunt
-  useEffect(() => {
-    if (s.opponent !== "oracle") return;
-    if (s.over) {
-      const who = s.over.who;
-      summon(who === "O" ? "win" : who === "X" ? "loss" : "draw");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.over]);
-
-  // -------------------------------------------------------------------------
-  const start = (mode: Mode) =>
-    setS((st) => ({ ...initial, mode, opponent: st.opponent, screen: "play" }));
-  const backToMenu = () => { oracleActedPly.current = -1; setOracleLine(null); setS((st) => ({ ...st, screen: "landing" })); };
-  const setOpponent = (opponent: Opponent) => { oracleActedPly.current = -1; setOracleLine(null); setS((st) => ({ ...initial, mode: st.mode, opponent, screen: "play" })); };
-  const reset = () => {
-    oracleActedPly.current = -1; setOracleLine(null);
-    setS((st) => ({ ...initial, mode: st.mode, opponent: st.opponent, screen: "play" }));
-  };
-
-  // --- 3x3 commit (classic + vanishing) ------------------------------------
+  // ---- commits (pure) ----
   function commit3(st: State, i: number): State {
     if (st.board[i] || st.over) return st;
     const board = st.board.slice();
@@ -131,146 +73,114 @@ export default function Home() {
     board[i] = st.turn;
     if (st.mode === "vanishing") {
       queue[st.turn].push(i);
-      if (queue[st.turn].length > 3) {
-        const old = queue[st.turn].shift()!;
-        board[old] = null;
-      }
+      if (queue[st.turn].length > 3) board[queue[st.turn].shift()!] = null;
     }
     const w = winner(board);
     let over: Over = null;
     if (w) over = { who: w.who, line: w.line };
     else if (st.mode === "classic" && board.every(Boolean)) over = { who: null };
-    return {
-      ...st, board, queue,
-      turn: over ? st.turn : (st.turn === "X" ? "O" : "X"),
-      over, ply: st.ply + 1,
-    };
+    return { ...st, board, queue, turn: over ? st.turn : st.turn === "X" ? "O" : "X", over, ply: st.ply + 1 };
   }
-
-  // --- ultimate commit -----------------------------------------------------
-  function commitUltimate(st: State, b: number, i: number): State {
+  function commitU(st: State, b: number, i: number): State {
     if (st.over || st.boardsWon[b] || st.ub[b][i]) return st;
     if (st.active !== null && st.active !== b) return st;
-    const ub = st.ub.map((mini, idx) => (idx === b ? mini.slice() : mini));
+    const ub = st.ub.map((m, k) => (k === b ? m.slice() : m));
     ub[b][i] = st.turn;
     const boardsWon = st.boardsWon.slice();
-    const w = winner(ub[b]);
-    if (w) boardsWon[b] = w.who;
-    // next forced board = cell index just played, unless that board is closed
+    const w = winner(ub[b]); if (w) boardsWon[b] = w.who;
     const destClosed = !!boardsWon[i] || ub[i].every(Boolean);
     const active = destClosed ? null : i;
     const meta = winner(boardsWon);
-    const allDecided = boardsWon.every((v, idx) => v || ub[idx].every(Boolean));
+    const allDecided = boardsWon.every((v, k) => v || ub[k].every(Boolean));
     let over: Over = null;
     if (meta) over = { who: meta.who, line: meta.line };
     else if (allDecided) over = { who: null };
-    return {
-      ...st, ub, boardsWon, active, metaLine: meta ? meta.line : null,
-      turn: over ? st.turn : (st.turn === "X" ? "O" : "X"),
-      over, ply: st.ply + 1,
-    };
+    return { ...st, ub, boardsWon, active, metaLine: meta ? meta.line : null,
+      turn: over ? st.turn : st.turn === "X" ? "O" : "X", over, ply: st.ply + 1 };
   }
 
-  const human3 = (i: number) => {
-    if (isOracleTurn || s.over) return;
-    setS((st) => {
-      const next = commit3(st, i);
-      if (next !== st && st.opponent === "oracle" && !next.over) summon("move");
-      return next;
-    });
+  // ---- move + silent Oracle reply ----
+  const oracleReplies = (after: State): State => {
+    if (after.opponent !== "oracle" || after.over || after.turn !== "O") return after;
+    if (after.mode === "ultimate") {
+      const us: UltimateState = { boards: after.ub, boardsWon: after.boardsWon, active: after.active };
+      const mv = ultimateBotMove(us, "O", "X");
+      return mv ? commitU(after, mv.b, mv.i) : after;
+    }
+    const i = botMove3(after.board, "O", "X");
+    return i >= 0 ? commit3(after, i) : after;
   };
-  const humanU = (b: number, i: number) => {
-    if (isOracleTurn || s.over) return;
-    setS((st) => {
-      const next = commitUltimate(st, b, i);
-      if (next !== st && st.opponent === "oracle" && !next.over) summon("move");
-      return next;
-    });
-  };
+  const play3 = (i: number) => { if (!isOracleTurn && !s.over) setS((st) => oracleReplies(commit3(st, i))); };
+  const playU = (b: number, i: number) => { if (!isOracleTurn && !s.over) setS((st) => oracleReplies(commitU(st, b, i))); };
 
   // -------------------------------------------------------------------------
-  const goldFirst = s.turn === "X";
-  const turnLabel = goldFirst ? "Gold" : s.opponent === "oracle" ? "Oracle" : "Cinnabar";
-  const vanishingIdx =
-    s.mode === "vanishing" && !s.over && s.queue[s.turn].length === 3 ? s.queue[s.turn][0] : -1;
+  const goldTurn = s.turn === "X";
+  const vanishingIdx = s.mode === "vanishing" && !s.over && s.queue[s.turn].length === 3 ? s.queue[s.turn][0] : -1;
+  const other: Opponent = s.opponent === "oracle" ? "human" : "oracle";
 
   return (
     <>
       <Defs />
-      <div className="fog" />
-      <div className="grain" />
-      <div className={`play-bg${s.screen === "play" ? " show" : ""}`} />
-
-      <div className="stage">
-        {s.screen === "landing" ? (
-          <section className="landing">
-            <div className="hero"><div className="hero-fallback"><div className="ink-orb" /></div></div>
-            <div className="title-block">
-              <h1 className="title">Tic&nbsp;Tac&nbsp;Toe</h1>
-              <p className="subtitle">Choose your board. Then choose your rival.</p>
-              <div className="rule" />
-            </div>
-
-            <div className="modes">
-              <ModeCard mode="classic" name="Classic"
-                desc="The game you know. Three in a row wins." onPick={start} />
-              <ModeCard mode="vanishing" name="Vanishing"
-                desc="Only three marks each. Place a fourth and your oldest fades away." onPick={start} />
-              <ModeCard mode="ultimate" name="Ultimate"
-                desc="Nine boards in one. Your move sends your rival to the next." onPick={start} />
-            </div>
-
-            <div className="signature" title="" />
-          </section>
-        ) : (
-          <section className="play">
-            <div className="topbar">
-              <button className="back" onClick={backToMenu}>‹ Menu</button>
-              <div className="mode-title">{s.mode}</div>
-              <div className="turn">
-                <span className={`dot ${goldFirst ? "x" : "o"}`} />
-                <span>{turnLabel}</span>
-              </div>
-            </div>
-
-            <div className="board-wrap">
-              <div className="picker" role="group" aria-label="Opponent">
-                <button className="pick" aria-pressed={s.opponent === "human"}
-                  onClick={() => setOpponent("human")}>Two Players</button>
-                <button className="pick" aria-pressed={s.opponent === "oracle"}
-                  onClick={() => setOpponent("oracle")}>The Oracle</button>
-              </div>
-
-              {s.mode === "ultimate" ? (
-                <UltimateBoard s={s} onCell={humanU} />
-              ) : (
-                <Grid s={s} vanishingIdx={vanishingIdx} onCell={human3} disabled={isOracleTurn} />
-              )}
-
-              {s.opponent === "oracle" && (
-                <div className="oracle">
-                  <span className="who">THE ORACLE</span>
-                  {oracleLine ?? "Approach, then."}
-                </div>
-              )}
-
-              <div className="status">
-                {s.over ? (
-                  s.over.who === null ? (
-                    <>A still board. <span className="dim">Neither prevails.</span></>
-                  ) : s.over.who === "X" ? (
-                    <><span className="gold">Gold</span> takes the board.</>
-                  ) : (
-                    <><span className="red">{s.opponent === "oracle" ? "The Oracle" : "Cinnabar"}</span> wins.</>
-                  )
-                ) : null}
-              </div>
-
-              <button className="again" onClick={reset}>New Game</button>
-            </div>
-          </section>
-        )}
+      {/* full-bleed dragon: three cross-fading colour variants */}
+      <div className={`dragons mode-${s.screen === "play" ? "hidden" : MODES[idx].id}`}>
+        <div className="drag classic" /><div className="drag vanishing" /><div className="drag ultimate" />
+        <div className="mist-fallback" />
       </div>
+      <Fog />
+
+      {s.screen === "landing" ? (
+        // ================= TITLE =================
+        <main className="title-screen">
+          <h1 className="brand">Tic&nbsp;Tac&nbsp;Toe</h1>
+
+          <div className="carousel">
+            <button className="chev" aria-label="Previous board" onClick={() => cycle(-1)}>‹</button>
+
+            <button className={`disc mode-${MODES[idx].id}`} onClick={begin} aria-label={`Begin ${MODES[idx].name}`}>
+              <span className={`disc-name${swapping ? " swap" : ""}`}>{MODES[idx].name}</span>
+              <span className="disc-hint">tap to begin</span>
+              <span className={`disc-desc${swapping ? " swap" : ""}`}>{MODES[idx].desc}</span>
+            </button>
+
+            <button className="chev" aria-label="Next board" onClick={() => cycle(1)}>›</button>
+          </div>
+
+          <p className="tagline">Choose your board. Then choose your rival.</p>
+        </main>
+      ) : (
+        // ================= PLAY =================
+        <main className={`play mode-${s.mode}`}>
+          <div className="clouds" />
+          <div className="vignette" />
+
+          <div className="topbar">
+            <button className="home" onClick={home}>‹ Home</button>
+            <div className="mode-title">{s.mode}</div>
+            <div className="tr">
+              <button className="oppToggle" onClick={switchOpponent}>{oppLabel(other)}</button>
+              <div className="turn"><span className={`dot ${goldTurn ? "x" : "o"}`} /><span>{goldTurn ? "Gold" : s.opponent === "oracle" ? "Oracle" : "Cinnabar"}</span></div>
+            </div>
+          </div>
+
+          <div className="opp-current"><span className="ul">{oppLabel(s.opponent)}</span></div>
+
+          <div className="board-wrap">
+            {s.mode === "ultimate"
+              ? <Ultimate s={s} onCell={playU} />
+              : <Grid s={s} vanishingIdx={vanishingIdx} onCell={play3} disabled={isOracleTurn} />}
+          </div>
+
+          <div className="status">
+            {s.over && (s.over.who === null
+              ? <>A still board. <span className="dim">Neither prevails.</span></>
+              : s.over.who === "X"
+                ? <><span className="gold">Gold</span> takes the board.</>
+                : <><span className="red">{s.opponent === "oracle" ? "The Oracle" : "Cinnabar"}</span> prevails.</>)}
+          </div>
+
+          <button className="newgame" onClick={reset}>New game</button>
+        </main>
+      )}
     </>
   );
 }
@@ -280,28 +190,28 @@ function Grid({ s, vanishingIdx, onCell, disabled }:
   { s: State; vanishingIdx: number; onCell: (i: number) => void; disabled: boolean }) {
   return (
     <div className="grid">
-      <div className="line v v1" /><div className="line v v2" />
-      <div className="line h h1" /><div className="line h h2" />
+      <div className="gline v v1" /><div className="gline v v2" />
+      <div className="gline h h1" /><div className="gline h h2" />
       {s.board.map((v, i) => (
-        <button key={i} className={`cell${s.over?.line?.includes(i) ? " win" : ""}`}
-          aria-label={`cell ${i + 1}`} disabled={disabled} onClick={() => onCell(i)}>
+        <button key={i} className="cell" aria-label={`cell ${i + 1}`} disabled={disabled} onClick={() => onCell(i)}>
           {v && <Mark key={`${i}-${v}`} type={v} fading={i === vanishingIdx} />}
         </button>
       ))}
+      {s.over?.line && <WinStroke line={s.over.line} seal />}
     </div>
   );
 }
 
-function UltimateBoard({ s, onCell }: { s: State; onCell: (b: number, i: number) => void }) {
+function Ultimate({ s, onCell }: { s: State; onCell: (b: number, i: number) => void }) {
   return (
     <div className="ultimate">
       {s.ub.map((mini, b) => {
-        const active = !s.over && (s.active === null || s.active === b) && miniPlayable(
-          { boards: s.ub, boardsWon: s.boardsWon, active: s.active }, b,
-        );
+        const active = !s.over && (s.active === null || s.active === b)
+          && miniPlayable({ boards: s.ub, boardsWon: s.boardsWon, active: s.active }, b);
         const won = s.boardsWon[b];
         return (
           <div key={b} className={`mini${active ? " active" : ""}`}>
+            <div className="guide" aria-hidden="true" />
             {mini.map((v, i) => (
               <button key={i} className="ucell" aria-label={`board ${b + 1} cell ${i + 1}`}
                 disabled={!active || !!v} onClick={() => onCell(b, i)}>
@@ -312,68 +222,42 @@ function UltimateBoard({ s, onCell }: { s: State; onCell: (b: number, i: number)
           </div>
         );
       })}
+      {s.metaLine && <WinStroke line={s.metaLine} seal />}
     </div>
   );
 }
 
-function Mark({ type, fading }: { type: Player; fading?: boolean }) {
-  if (type === "X") {
-    return (
-      <svg viewBox="0 0 100 100" className={fading ? "fading" : ""}>
-        <path className="stroke x draw" d="M22 20 Q52 46 80 82" />
-        <path className="stroke x draw d2" d="M80 20 Q48 48 20 82" />
-      </svg>
-    );
-  }
+// gold brush stroke through the winning three + a small cinnabar seal
+function WinStroke({ line, seal }: { line: number[]; seal?: boolean }) {
+  const c = (i: number) => ({ x: ((i % 3) + 0.5) / 3 * 100, y: (Math.floor(i / 3) + 0.5) / 3 * 100 });
+  const a = c(line[0]), b = c(line[2]);
+  const ex = (b.x - a.x) * 0.14, ey = (b.y - a.y) * 0.14; // extend past the end cells
+  const mx = (a.x + b.x) / 2 + (b.y - a.y) * 0.03, my = (a.y + b.y) / 2 - (b.x - a.x) * 0.03; // slight brush bow
   return (
-    <svg viewBox="0 0 100 100" className={fading ? "fading" : ""}>
+    <svg className="winstroke" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <path className="ws draw" d={`M ${a.x - ex} ${a.y - ey} Q ${mx} ${my} ${b.x + ex} ${b.y + ey}`} />
+      {seal && <circle className="seal" cx={b.x + ex} cy={b.y + ey} r="5" />}
+    </svg>
+  );
+}
+
+function Mark({ type, fading }: { type: Player; fading?: boolean }) {
+  const cls = fading ? "fading" : "";
+  return type === "X" ? (
+    <svg viewBox="0 0 100 100" className={cls}>
+      <path className="stroke x draw" d="M22 20 Q52 46 80 82" />
+      <path className="stroke x draw d2" d="M80 20 Q48 48 20 82" />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 100 100" className={cls}>
       <path className="stroke o draw" d="M78 34 A32 32 0 1 0 74 68" />
     </svg>
   );
 }
 
-function ModeCard({ mode, name, desc, onPick }:
-  { mode: Mode; name: string; desc: string; onPick: (m: Mode) => void }) {
-  return (
-    <button className="mode" onClick={() => onPick(mode)}>
-      <ModeIcon mode={mode} />
-      <span>
-        <span className="mode-name">{name}</span>
-        <span className="mode-desc">{desc}</span>
-      </span>
-    </button>
-  );
+function Fog() {
+  return <div className="fog" aria-hidden="true"><span /><span /><span /></div>;
 }
-
-function ModeIcon({ mode }: { mode: Mode }) {
-  // small gold grid glyphs — a plain grid, a grid with one fading cell, nested grids
-  if (mode === "vanishing") {
-    return (
-      <svg className="mode-icon" viewBox="0 0 40 40">
-        <g className="g">
-          <path d="M14 4 V36 M26 4 V36 M4 14 H36 M4 26 H36" />
-          <rect x="5" y="27" width="8" height="8" strokeDasharray="2 2" />
-        </g>
-      </svg>
-    );
-  }
-  if (mode === "ultimate") {
-    return (
-      <svg className="mode-icon" viewBox="0 0 40 40">
-        <g className="g">
-          <path d="M14 3 V37 M26 3 V37 M3 14 H37 M3 26 H37" />
-          <path d="M9 6 V11 M6 9 H11 M31 29 V34 M28 31 H34" strokeWidth="1.4" />
-        </g>
-      </svg>
-    );
-  }
-  return (
-    <svg className="mode-icon" viewBox="0 0 40 40">
-      <g className="g"><path d="M14 4 V36 M26 4 V36 M4 14 H36 M4 26 H36" /></g>
-    </svg>
-  );
-}
-
 function Defs() {
   return (
     <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">
