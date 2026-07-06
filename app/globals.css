@@ -20,12 +20,12 @@ body{ font-family:var(--serif); color:var(--ink); background:var(--mist);
 .dragons{ position:fixed; inset:0; z-index:-3; }
 .drag{ position:absolute; inset:0; background-size:cover; background-position:center top;
   opacity:0; transition:opacity 1s ease; }
-.drag.classic{ background-image:var(--img-classic); }
-.drag.vanishing{ background-image:var(--img-vanishing); }
-.drag.ultimate{ background-image:var(--img-ultimate); }
-.dragons.mode-classic   .drag.classic  { opacity:1; }
-.dragons.mode-vanishing .drag.vanishing{ opacity:1; }
-.dragons.mode-ultimate  .drag.ultimate { opacity:1; }
+.drag.d-classic{ background-image:var(--img-classic); }
+.drag.d-vanishing{ background-image:var(--img-vanishing); }
+.drag.d-ultimate{ background-image:var(--img-ultimate); }
+.dragons.mode-classic   .drag.d-classic  { opacity:1; }
+.dragons.mode-vanishing .drag.d-vanishing{ opacity:1; }
+.dragons.mode-ultimate  .drag.d-ultimate { opacity:1; }
 .dragons.mode-hidden .drag{ opacity:0; }
 .mist-fallback{ position:absolute; inset:0; z-index:-1;
   background:

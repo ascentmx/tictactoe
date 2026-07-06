@@ -133,7 +133,7 @@ export default function Home() {
       <Defs />
       {/* full-bleed dragon: three cross-fading colour variants */}
       <div className={`dragons mode-${s.screen === "play" ? "hidden" : MODES[idx].id}`}>
-        <div className="drag classic" /><div className="drag vanishing" /><div className="drag ultimate" />
+        <div className="drag d-classic" /><div className="drag d-vanishing" /><div className="drag d-ultimate" />
         <div className="mist-fallback" />
       </div>
       <Fog />
