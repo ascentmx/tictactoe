@@ -6,7 +6,7 @@ import {
   winner, botMove3, ultimateBotMove, miniPlayable, UltimateState,
 } from "@/lib/game";
 import {
-  supabaseReady, createGame, joinGame, makeMove, subscribeGame, GameBlob, GameRow,
+  supabaseReady, createGame, joinGame, makeMove, subscribeGame, fetchGame, GameBlob, GameRow,
 } from "@/lib/online";
 
 // ---------------------------------------------------------------------------
@@ -110,12 +110,13 @@ export default function Home() {
   const [invited, setInvited] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mpChoosing, setMpChoosing] = useState(false);
+  const [forcePlay, setForcePlay] = useState(false);
   const [onlineBusy, setOnlineBusy] = useState(false);
   const [onlineErr, setOnlineErr] = useState("");
   const unsub = useRef<null | (() => void)>(null);
 
   const isOracleTurn = s.screen === "play" && s.opponent === "oracle" && s.turn === "O" && !s.over;
-  const myTurn = s.opponent !== "online" || (!!room && room.status !== "waiting" && room.side === s.turn);
+  const myTurn = s.opponent !== "online" || (!!room && (room.status !== "waiting" || forcePlay) && room.side === s.turn);
 
   // ---- carousel ----
   const cycle = (dir: 1 | -1) => {
@@ -124,7 +125,7 @@ export default function Home() {
   };
 
   // ---- navigation ----
-  const clearOnline = () => { unsub.current?.(); unsub.current = null; setRoom(null); setJoinInput(""); setOnlineErr(""); };
+  const clearOnline = () => { unsub.current?.(); unsub.current = null; setRoom(null); setJoinInput(""); setOnlineErr(""); setForcePlay(false); };
   const begin = () => { oracleActedPly.current = -1; clearOnline(); setMpChoosing(false); setS({ ...base, mode: MODES[idx].id, opponent: "oracle", screen: "play" }); };
   const home = () => { clearOnline(); setMpChoosing(false); setS((st) => ({ ...st, screen: "landing" })); };
   const reset = () => { oracleActedPly.current = -1; setMpChoosing(false); if (s.opponent === "online") clearOnline();
@@ -198,22 +199,23 @@ export default function Home() {
   }
 
   // ---- human moves (local + online) ----
+  const canPlayOnline = () => !!room && (room.status !== "waiting" || forcePlay) && room.side === s.turn;
   const play3 = (i: number) => {
     if (s.over) return;
     if (s.opponent === "online") {
-      if (!room || room.status === "waiting" || room.side !== s.turn) return;
+      if (!canPlayOnline()) return;
       const next = commit3(s, i);
-      if (next !== s) makeMove(room.code, toBlob(next), s.ply).catch((e) => setOnlineErr(String(e.message ?? e)));
-      return; // wait for the realtime echo
+      if (next !== s) { setS(next); makeMove(room!.code, toBlob(next), s.ply).catch((e) => setOnlineErr(String(e.message ?? e))); }
+      return;
     }
     if (!isOracleTurn) setS((st) => commit3(st, i));
   };
   const playU = (b: number, i: number) => {
     if (s.over) return;
     if (s.opponent === "online") {
-      if (!room || room.status === "waiting" || room.side !== s.turn) return;
+      if (!canPlayOnline()) return;
       const next = commitU(s, b, i);
-      if (next !== s) makeMove(room.code, toBlob(next), s.ply).catch((e) => setOnlineErr(String(e.message ?? e)));
+      if (next !== s) { setS(next); makeMove(room!.code, toBlob(next), s.ply).catch((e) => setOnlineErr(String(e.message ?? e))); }
       return;
     }
     if (!isOracleTurn) setS((st) => commitU(st, b, i));
@@ -253,6 +255,25 @@ export default function Home() {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.over]);
+
+  // ---- polling: the reliable sync path (works regardless of realtime config) ----
+  useEffect(() => {
+    if (s.opponent !== "online" || !room || s.over) return;
+    let active = true;
+    const tick = async () => {
+      try {
+        const row = await fetchGame(room.code);
+        if (!active || !row) return;
+        // only adopt server state if it's not older than what we already show
+        setS((prev) => (row.state.ply >= prev.ply ? { ...prev, ...row.state } : prev));
+        setRoom((r) => (r ? { ...r, status: row.status, nameX: row.name_x, nameO: row.name_o } : r));
+      } catch { /* transient — next tick retries */ }
+    };
+    tick();
+    const id = setInterval(tick, 1500);
+    return () => { active = false; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.opponent, room?.code, s.over]);
 
   // ---- online: apply incoming rows ----
   const startSub = (code: string) => {
@@ -296,7 +317,7 @@ export default function Home() {
   const turnLabel = s.opponent === "online" ? nameFor(s.turn)
     : goldTurn ? "Gold" : s.opponent === "oracle" ? "Oracle" : "Cinnabar";
   const vanishingIdx = s.mode === "vanishing" && !s.over && s.queue[s.turn].length === 3 ? s.queue[s.turn][0] : -1;
-  const showLobby = s.opponent === "online" && (!room || room.status === "waiting");
+  const showLobby = s.opponent === "online" && (!room || (room.status === "waiting" && !forcePlay));
   const group: "oracle" | "mp" = s.opponent === "oracle" && !mpChoosing ? "oracle" : "mp";
   const currentLabel = mpChoosing ? "Multiplayer" : oppLabel(s.opponent);
 
@@ -362,7 +383,7 @@ export default function Home() {
               <Lobby room={room} joinInput={joinInput} setJoinInput={setJoinInput}
                 playerName={playerName} setPlayerName={setPlayerName} invited={invited}
                 onHost={hostGame} onJoin={joinRoom} onShare={shareLink} copied={copied}
-                busy={onlineBusy} err={onlineErr} />
+                onForcePlay={() => setForcePlay(true)} busy={onlineBusy} err={onlineErr} />
             ) : s.mode === "ultimate" ? (
               <Ultimate s={s} onCell={playU} locked={!myTurn} />
             ) : (
@@ -402,11 +423,11 @@ export default function Home() {
 
 // ---------------------------------------------------------------------------
 function Lobby({ room, joinInput, setJoinInput, playerName, setPlayerName, invited,
-  onHost, onJoin, onShare, copied, busy, err }: {
+  onHost, onJoin, onShare, copied, onForcePlay, busy, err }: {
   room: Room | null; joinInput: string; setJoinInput: (v: string) => void;
   playerName: string; setPlayerName: (v: string) => void; invited: boolean;
   onHost: () => void; onJoin: () => void; onShare: () => void; copied: boolean;
-  busy: boolean; err: string;
+  onForcePlay: () => void; busy: boolean; err: string;
 }) {
   if (room && room.status === "waiting") {
     return (
@@ -415,6 +436,7 @@ function Lobby({ room, joinInput, setJoinInput, playerName, setPlayerName, invit
         <div className="code">{room.code}</div>
         <button className="lobby-btn" onClick={onShare}>{copied ? "Link copied" : "Share link"}</button>
         <div className="lobby-sub">Or read them the code. They tap Multiplayer, then Join.</div>
+        <button className="lobby-ghost" onClick={onForcePlay}>Play now &rsaquo;</button>
       </div>
     );
   }

@@ -61,6 +61,12 @@ export async function makeMove(code: string, state: GameBlob, fromPly: number): 
   if (error) throw new Error(error.message);
 }
 
+export async function fetchGame(code: string): Promise<GameRow | null> {
+  if (!supabase) return null;
+  const { data } = await supabase.from("games").select("*").eq("code", code).single();
+  return (data as GameRow) ?? null;
+}
+
 // Subscribe to a room. Fires the callback with the current row now and on every change.
 export function subscribeGame(code: string, onRow: (row: GameRow) => void): () => void {
   if (!supabase) return () => {};

@@ -163,6 +163,9 @@ body{ font-family:var(--serif); color:var(--ink); background:var(--mist);
 .join-input:focus-visible{ outline:2px solid var(--gold-deep); }
 .lobby-btn.small{ font-size:.95rem; padding:.5rem 1.1rem; }
 .lobby-err{ font-size:.9rem; color:var(--cinnabar); font-style:italic; }
+.lobby-ghost{ margin-top:.4rem; font-family:var(--serif); font-size:.95rem; letter-spacing:.08em;
+  color:var(--ink-soft); background:none; border:none; cursor:pointer; transition:color .2s; }
+.lobby-ghost:hover, .lobby-ghost:focus-visible{ color:var(--gold-deep); outline:none; }
 
 .board-wrap{ flex:1; display:grid; place-items:center; padding:0 1rem; }
 
