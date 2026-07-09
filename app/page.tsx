@@ -131,12 +131,10 @@ export default function Home() {
   const home = () => { clearOnline(); setS((st) => ({ ...st, screen: "landing" })); };
   const reset = () => { oracleActedPly.current = -1; if (s.opponent === "online") clearOnline();
     setS((st) => ({ ...base, mode: st.mode, opponent: st.opponent, screen: "play" })); };
-  const switchOpponent = () => {
+  const setOpponentTo = (target: Opponent) => {
+    if (target === s.opponent) return;
     oracleActedPly.current = -1; clearOnline();
-    setS((st) => {
-      const nxt = OPP_ORDER[(OPP_ORDER.indexOf(st.opponent) + 1) % OPP_ORDER.length];
-      return { ...base, mode: st.mode, opponent: nxt, screen: "play" };
-    });
+    setS((st) => ({ ...base, mode: st.mode, opponent: target, screen: "play" }));
   };
   useEffect(() => () => { unsub.current?.(); }, []);
 
@@ -296,7 +294,6 @@ export default function Home() {
   const turnLabel = s.opponent === "online" ? nameFor(s.turn)
     : goldTurn ? "Gold" : s.opponent === "oracle" ? "Oracle" : "Cinnabar";
   const vanishingIdx = s.mode === "vanishing" && !s.over && s.queue[s.turn].length === 3 ? s.queue[s.turn][0] : -1;
-  const nextOpp = OPP_ORDER[(OPP_ORDER.indexOf(s.opponent) + 1) % OPP_ORDER.length];
   const showLobby = s.opponent === "online" && (!room || room.status === "waiting");
 
   return (
@@ -331,7 +328,11 @@ export default function Home() {
             <button className="home" onClick={home}>‹ Home</button>
             <div className="mode-title">{s.mode}</div>
             <div className="tr">
-              <button className="oppToggle" onClick={switchOpponent}>{oppLabel(nextOpp)}</button>
+              <div className="opp-others">
+                {OPP_ORDER.filter((o) => o !== s.opponent).map((o) => (
+                  <button key={o} className="oppToggle" onClick={() => setOpponentTo(o)}>{oppLabel(o)}</button>
+                ))}
+              </div>
               <div className="turn"><span className={`dot ${goldTurn ? "x" : "o"}`} /><span>{turnLabel}</span></div>
             </div>
           </div>

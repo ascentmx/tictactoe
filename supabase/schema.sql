@@ -43,13 +43,24 @@ create or replace function public.join_game(p_code text, p_name text default nul
 returns public.games language plpgsql security definer as $$
 declare g public.games;
 begin
+  select * into g from public.games where code = p_code for update;
+  if g.id is null then raise exception 'Game % not found', p_code; end if;
+
+  -- already one of the two players? just hand the row back (rejoin / retry)
+  if auth.uid() = g.player_x or auth.uid() = g.player_o then
+    return g;
+  end if;
+
+  if g.player_o is not null then
+    raise exception 'Game % is full', p_code;
+  end if;
+
   update public.games
-     set player_o = auth.uid(), name_o = nullif(p_name, ''), status = 'live'
-   where code = p_code
-     and player_o is null
-     and player_x is distinct from auth.uid()
+     set player_o = auth.uid(),
+         name_o   = coalesce(nullif(p_name, ''), name_o),
+         status   = 'live'
+   where id = g.id
   returning * into g;
-  if g.id is null then raise exception 'Game % is full or unavailable', p_code; end if;
   return g;
 end; $$;
 
@@ -93,4 +104,16 @@ grant execute on function public.join_game(text, text)               to anon, au
 grant execute on function public.make_move(text, jsonb, int)         to anon, authenticated;
 
 -- ---- realtime --------------------------------------------------------
-alter publication supabase_realtime add table public.games;
+-- FULL replica identity lets Row Level Security evaluate realtime UPDATE
+-- events, so the host reliably receives "someone joined" and every move.
+alter table public.games replica identity full;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'games'
+  ) then
+    alter publication supabase_realtime add table public.games;
+  end if;
+end $$;
