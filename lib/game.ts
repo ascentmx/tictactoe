@@ -6,7 +6,7 @@
 export type Player = "X" | "O";
 export type Cell = Player | null;
 export type Mode = "classic" | "vanishing" | "ultimate";
-export type Opponent = "human" | "oracle";
+export type Opponent = "human" | "oracle" | "online";
 
 export const WINS: number[][] = [
   [0, 1, 2], [3, 4, 5], [6, 7, 8],

@@ -5,6 +5,9 @@ import {
   Cell, Mode, Opponent, Player,
   winner, botMove3, ultimateBotMove, miniPlayable, UltimateState,
 } from "@/lib/game";
+import {
+  supabaseReady, createGame, joinGame, makeMove, subscribeGame, GameBlob, GameRow,
+} from "@/lib/online";
 
 // ---------------------------------------------------------------------------
 const MODES: { id: Mode; name: string; desc: string }[] = [
@@ -12,7 +15,11 @@ const MODES: { id: Mode; name: string; desc: string }[] = [
   { id: "vanishing", name: "Vanishing", desc: "Only three marks each. A fourth fades your oldest." },
   { id: "ultimate",  name: "Ultimate",  desc: "Nine boards in one. Your move sends your rival on." },
 ];
-const oppLabel = (o: Opponent) => (o === "oracle" ? "The Oracle" : "Multiplayer");
+const oppLabel = (o: Opponent) =>
+  o === "oracle" ? "The Oracle" : o === "online" ? "Multiplayer" : "Pass & Play";
+
+// opponents you can cycle through (online only when Supabase is configured)
+const OPP_ORDER: Opponent[] = supabaseReady ? ["oracle", "human", "online"] : ["oracle", "human"];
 
 const CONGRATS = [
   "Three in a row. The board is yours.",
@@ -48,6 +55,14 @@ const DRAWS = [
   "Two minds, one deadlock.",
   "The mist settles on no one.",
 ];
+const LOSSES = [
+  "Bested this time. Run it back?",
+  "A loss with honour. Again?",
+  "The board favoured your rival today.",
+  "So close. Demand a rematch.",
+  "Outplayed — but the mist forgets quickly.",
+  "Not your board this time.",
+];
 const pick = (a: string[]) => a[Math.floor(Math.random() * a.length)];
 
 type Over = { who: Player | null; line?: number[] } | null;
@@ -66,6 +81,7 @@ type State = {
   over: Over;
   ply: number;
 };
+type Room = { code: string; side: Player; status: "waiting" | "live" | "ended"; nameX: string | null; nameO: string | null };
 
 const fresh3 = () => ({ board: Array(9).fill(null) as Cell[], queue: { X: [] as number[], O: [] as number[] } });
 const freshU = () => ({
@@ -76,32 +92,76 @@ const base: State = {
   screen: "landing", mode: "classic", opponent: "oracle", turn: "X",
   ...fresh3(), ...freshU(), over: null, ply: 0,
 };
+const toBlob = (st: State): GameBlob => ({
+  mode: st.mode, turn: st.turn, board: st.board, queue: st.queue,
+  ub: st.ub, boardsWon: st.boardsWon, active: st.active, metaLine: st.metaLine, over: st.over, ply: st.ply,
+});
 
 // ===========================================================================
 export default function Home() {
   const [s, setS] = useState<State>(base);
-  const [idx, setIdx] = useState(0); // carousel index
+  const [idx, setIdx] = useState(0);
   const [swapping, setSwapping] = useState(false);
   const [endMsg, setEndMsg] = useState("");
   const [showEnd, setShowEnd] = useState(false);
   const oracleActedPly = useRef(-1);
 
+  // online session
+  const [room, setRoom] = useState<Room | null>(null);
+  const [joinInput, setJoinInput] = useState("");
+  const [playerName, setPlayerName] = useState("");
+  const [invited, setInvited] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [onlineBusy, setOnlineBusy] = useState(false);
+  const [onlineErr, setOnlineErr] = useState("");
+  const unsub = useRef<null | (() => void)>(null);
+
   const isOracleTurn = s.screen === "play" && s.opponent === "oracle" && s.turn === "O" && !s.over;
+  const myTurn = s.opponent !== "online" || (!!room && room.status !== "waiting" && room.side === s.turn);
 
   // ---- carousel ----
   const cycle = (dir: 1 | -1) => {
     setSwapping(true);
-    setTimeout(() => {
-      setIdx((i) => (i + dir + MODES.length) % MODES.length);
-      setSwapping(false);
-    }, 170);
+    setTimeout(() => { setIdx((i) => (i + dir + MODES.length) % MODES.length); setSwapping(false); }, 170);
   };
-  const begin = () => { oracleActedPly.current = -1; setS({ ...base, mode: MODES[idx].id, opponent: "oracle", screen: "play" }); };
 
   // ---- navigation ----
-  const home = () => setS((st) => ({ ...st, screen: "landing" }));
-  const reset = () => { oracleActedPly.current = -1; setS((st) => ({ ...base, mode: st.mode, opponent: st.opponent, screen: "play" })); };
-  const switchOpponent = () => { oracleActedPly.current = -1; setS((st) => ({ ...base, mode: st.mode, opponent: st.opponent === "oracle" ? "human" : "oracle", screen: "play" })); };
+  const clearOnline = () => { unsub.current?.(); unsub.current = null; setRoom(null); setJoinInput(""); setOnlineErr(""); };
+  const begin = () => { oracleActedPly.current = -1; clearOnline(); setS({ ...base, mode: MODES[idx].id, opponent: "oracle", screen: "play" }); };
+  const home = () => { clearOnline(); setS((st) => ({ ...st, screen: "landing" })); };
+  const reset = () => { oracleActedPly.current = -1; if (s.opponent === "online") clearOnline();
+    setS((st) => ({ ...base, mode: st.mode, opponent: st.opponent, screen: "play" })); };
+  const switchOpponent = () => {
+    oracleActedPly.current = -1; clearOnline();
+    setS((st) => {
+      const nxt = OPP_ORDER[(OPP_ORDER.indexOf(st.opponent) + 1) % OPP_ORDER.length];
+      return { ...base, mode: st.mode, opponent: nxt, screen: "play" };
+    });
+  };
+  useEffect(() => () => { unsub.current?.(); }, []);
+
+  // ---- open a shared link → land on the online lobby with the code filled ----
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("join");
+    if (code) {
+      if (supabaseReady) {
+        setJoinInput(code.toUpperCase().slice(0, 4));
+        setInvited(true);
+        setS((prev) => ({ ...prev, screen: "play", opponent: "online" }));
+      }
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
+
+  const shareLink = async () => {
+    if (!room) return;
+    const url = `${window.location.origin}/?join=${room.code}`;
+    try {
+      if (navigator.share) await navigator.share({ title: "Tic Tac Toe", text: "Join my match", url });
+      else { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1600); }
+    } catch { /* user dismissed the share sheet — nothing to do */ }
+  };
 
   // ---- commits (pure) ----
   function commit3(st: State, i: number): State {
@@ -137,11 +197,29 @@ export default function Home() {
       turn: over ? st.turn : st.turn === "X" ? "O" : "X", over, ply: st.ply + 1 };
   }
 
-  // ---- human moves ----
-  const play3 = (i: number) => { if (!isOracleTurn && !s.over) setS((st) => commit3(st, i)); };
-  const playU = (b: number, i: number) => { if (!isOracleTurn && !s.over) setS((st) => commitU(st, b, i)); };
+  // ---- human moves (local + online) ----
+  const play3 = (i: number) => {
+    if (s.over) return;
+    if (s.opponent === "online") {
+      if (!room || room.status === "waiting" || room.side !== s.turn) return;
+      const next = commit3(s, i);
+      if (next !== s) makeMove(room.code, toBlob(next), s.ply).catch((e) => setOnlineErr(String(e.message ?? e)));
+      return; // wait for the realtime echo
+    }
+    if (!isOracleTurn) setS((st) => commit3(st, i));
+  };
+  const playU = (b: number, i: number) => {
+    if (s.over) return;
+    if (s.opponent === "online") {
+      if (!room || room.status === "waiting" || room.side !== s.turn) return;
+      const next = commitU(s, b, i);
+      if (next !== s) makeMove(room.code, toBlob(next), s.ply).catch((e) => setOnlineErr(String(e.message ?? e)));
+      return;
+    }
+    if (!isOracleTurn) setS((st) => commitU(st, b, i));
+  };
 
-  // ---- Oracle replies after a short, deliberate pause ----
+  // ---- Oracle replies after a short pause (local only) ----
   useEffect(() => {
     if (!isOracleTurn || oracleActedPly.current === s.ply) return;
     oracleActedPly.current = s.ply;
@@ -165,22 +243,65 @@ export default function Home() {
   useEffect(() => {
     if (!s.over) { setEndMsg(""); setShowEnd(false); return; }
     const who = s.over.who;
-    const poolPick = who === null ? DRAWS : (who === "O" && s.opponent === "oracle") ? INSULTS : CONGRATS;
-    setEndMsg(pick(poolPick));
+    const poolArr =
+      who === null ? DRAWS
+      : s.opponent === "online" ? (room?.side === who ? CONGRATS : LOSSES)
+      : s.opponent === "oracle" ? (who === "O" ? INSULTS : CONGRATS)
+      : CONGRATS;
+    setEndMsg(pick(poolArr));
     const t = setTimeout(() => setShowEnd(true), 850);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.over]);
 
+  // ---- online: apply incoming rows ----
+  const startSub = (code: string) => {
+    unsub.current?.();
+    unsub.current = subscribeGame(code, (row: GameRow) => {
+      const b = row.state;
+      setS((prev) => ({ ...prev, ...b }));
+      setRoom((r) => (r ? { ...r, status: row.status, nameX: row.name_x, nameO: row.name_o } : r));
+    });
+  };
+  const hostGame = async () => {
+    setOnlineBusy(true); setOnlineErr("");
+    try {
+      const blob = toBlob({ ...base, mode: s.mode });
+      const nm = playerName.trim();
+      const { code } = await createGame(blob, nm);
+      setS((prev) => ({ ...prev, ...blob }));
+      setRoom({ code, side: "X", status: "waiting", nameX: nm || null, nameO: null });
+      startSub(code);
+    } catch (e) { setOnlineErr(String((e as Error).message ?? e)); }
+    setOnlineBusy(false);
+  };
+  const joinRoom = async () => {
+    const code = joinInput.trim().toUpperCase();
+    if (code.length < 4) { setOnlineErr("Enter the 4-character code."); return; }
+    setOnlineBusy(true); setOnlineErr("");
+    try {
+      const nm = playerName.trim();
+      const row = await joinGame(code, nm);
+      setS((prev) => ({ ...prev, ...row.state, mode: row.mode }));
+      setRoom({ code, side: "O", status: row.status, nameX: row.name_x, nameO: nm || row.name_o });
+      setInvited(false);
+      startSub(code);
+    } catch (e) { setOnlineErr(String((e as Error).message ?? e)); }
+    setOnlineBusy(false);
+  };
+
   // -------------------------------------------------------------------------
   const goldTurn = s.turn === "X";
+  const nameFor = (p: Player) => (p === "X" ? room?.nameX || "Gold" : room?.nameO || "Cinnabar");
+  const turnLabel = s.opponent === "online" ? nameFor(s.turn)
+    : goldTurn ? "Gold" : s.opponent === "oracle" ? "Oracle" : "Cinnabar";
   const vanishingIdx = s.mode === "vanishing" && !s.over && s.queue[s.turn].length === 3 ? s.queue[s.turn][0] : -1;
-  const other: Opponent = s.opponent === "oracle" ? "human" : "oracle";
+  const nextOpp = OPP_ORDER[(OPP_ORDER.indexOf(s.opponent) + 1) % OPP_ORDER.length];
+  const showLobby = s.opponent === "online" && (!room || room.status === "waiting");
 
   return (
     <>
       <Defs />
-      {/* full-bleed dragon: three cross-fading colour variants */}
       <div className={`dragons mode-${s.screen === "play" ? "hidden" : MODES[idx].id}`}>
         <div className="drag d-classic" /><div className="drag d-vanishing" /><div className="drag d-ultimate" />
         <div className="mist-fallback" />
@@ -188,26 +309,20 @@ export default function Home() {
       <Fog />
 
       {s.screen === "landing" ? (
-        // ================= TITLE =================
         <main className="title-screen">
           <h1 className="brand">Tic&nbsp;Tac&nbsp;Toe</h1>
-
           <div className="carousel">
             <button className="chev" aria-label="Previous board" onClick={() => cycle(-1)}>‹</button>
-
             <button className={`disc mode-${MODES[idx].id}`} onClick={begin} aria-label={`Begin ${MODES[idx].name}`}>
               <span className={`disc-name${swapping ? " swap" : ""}`}>{MODES[idx].name}</span>
               <span className="disc-hint">tap to begin</span>
               <span className={`disc-desc${swapping ? " swap" : ""}`}>{MODES[idx].desc}</span>
             </button>
-
             <button className="chev" aria-label="Next board" onClick={() => cycle(1)}>›</button>
           </div>
-
           <p className="tagline">Choose your board. Then choose your rival.</p>
         </main>
       ) : (
-        // ================= PLAY =================
         <main className={`play mode-${s.mode}`}>
           <div className="clouds" />
           <div className="vignette" />
@@ -216,29 +331,39 @@ export default function Home() {
             <button className="home" onClick={home}>‹ Home</button>
             <div className="mode-title">{s.mode}</div>
             <div className="tr">
-              <button className="oppToggle" onClick={switchOpponent}>{oppLabel(other)}</button>
-              <div className="turn"><span className={`dot ${goldTurn ? "x" : "o"}`} /><span>{goldTurn ? "Gold" : s.opponent === "oracle" ? "Oracle" : "Cinnabar"}</span></div>
+              <button className="oppToggle" onClick={switchOpponent}>{oppLabel(nextOpp)}</button>
+              <div className="turn"><span className={`dot ${goldTurn ? "x" : "o"}`} /><span>{turnLabel}</span></div>
             </div>
           </div>
 
           <div className="opp-current"><span className="ul">{oppLabel(s.opponent)}</span></div>
+          {s.opponent === "online" && room && room.status !== "waiting" && !s.over && (
+            <div className="turn-hint">{myTurn ? "Your move" : "Their move"}</div>
+          )}
 
           <div className="board-wrap">
-            {s.mode === "ultimate"
-              ? <Ultimate s={s} onCell={playU} />
-              : <Grid s={s} vanishingIdx={vanishingIdx} onCell={play3} disabled={isOracleTurn} />}
+            {showLobby ? (
+              <Lobby room={room} joinInput={joinInput} setJoinInput={setJoinInput}
+                playerName={playerName} setPlayerName={setPlayerName} invited={invited}
+                onHost={hostGame} onJoin={joinRoom} onShare={shareLink} copied={copied}
+                busy={onlineBusy} err={onlineErr} />
+            ) : s.mode === "ultimate" ? (
+              <Ultimate s={s} onCell={playU} locked={!myTurn} />
+            ) : (
+              <Grid s={s} vanishingIdx={vanishingIdx} onCell={play3} disabled={isOracleTurn || !myTurn} />
+            )}
           </div>
 
-          {!s.over && <button className="newgame" onClick={reset}>New game</button>}
+          {!s.over && !showLobby && <button className="newgame" onClick={reset}>New game</button>}
 
           {s.over && showEnd && (() => {
             const who = s.over.who;
-            const win = who === "X" || (who === "O" && s.opponent !== "oracle");
-            const headline = who === null
-              ? "A still board"
-              : s.opponent === "oracle"
-                ? (who === "X" ? "You win" : "The Oracle wins")
-                : (who === "X" ? "Gold prevails" : "Cinnabar prevails");
+            const win = s.opponent === "online" ? who === room?.side
+              : who === "X" || (who === "O" && s.opponent !== "oracle");
+            const headline = who === null ? "A still board"
+              : s.opponent === "online" ? `${nameFor(who)} wins`
+              : s.opponent === "oracle" ? (who === "X" ? "You win" : "The Oracle wins")
+              : (who === "X" ? "Gold prevails" : "Cinnabar prevails");
             const tone = who === null ? "draw" : win ? "win" : "loss";
             return (
               <div className="endwrap">
@@ -260,6 +385,40 @@ export default function Home() {
 }
 
 // ---------------------------------------------------------------------------
+function Lobby({ room, joinInput, setJoinInput, playerName, setPlayerName, invited,
+  onHost, onJoin, onShare, copied, busy, err }: {
+  room: Room | null; joinInput: string; setJoinInput: (v: string) => void;
+  playerName: string; setPlayerName: (v: string) => void; invited: boolean;
+  onHost: () => void; onJoin: () => void; onShare: () => void; copied: boolean;
+  busy: boolean; err: string;
+}) {
+  if (room && room.status === "waiting") {
+    return (
+      <div className="lobby">
+        <div className="lobby-title">Waiting for your rival</div>
+        <div className="code">{room.code}</div>
+        <button className="lobby-btn" onClick={onShare}>{copied ? "Link copied" : "Share link"}</button>
+        <div className="lobby-sub">Or read them the code. They tap Multiplayer, then Join.</div>
+      </div>
+    );
+  }
+  return (
+    <div className="lobby">
+      {invited && <div className="lobby-invite">You've been invited to a match</div>}
+      <input className="lobby-name" value={playerName} maxLength={16} placeholder="Your name"
+        onChange={(e) => setPlayerName(e.target.value)} aria-label="Your name" />
+      {!invited && <button className="lobby-btn" onClick={onHost} disabled={busy}>Create a game</button>}
+      {!invited && <div className="lobby-or">or</div>}
+      <div className="join-row">
+        <input className="join-input" value={joinInput} maxLength={4} placeholder="CODE"
+          onChange={(e) => setJoinInput(e.target.value.toUpperCase())} aria-label="Join code" />
+        <button className="lobby-btn small" onClick={onJoin} disabled={busy}>Join</button>
+      </div>
+      {err && <div className="lobby-err">{err}</div>}
+    </div>
+  );
+}
+
 function Grid({ s, vanishingIdx, onCell, disabled }:
   { s: State; vanishingIdx: number; onCell: (i: number) => void; disabled: boolean }) {
   return (
@@ -276,11 +435,11 @@ function Grid({ s, vanishingIdx, onCell, disabled }:
   );
 }
 
-function Ultimate({ s, onCell }: { s: State; onCell: (b: number, i: number) => void }) {
+function Ultimate({ s, onCell, locked }: { s: State; onCell: (b: number, i: number) => void; locked: boolean }) {
   return (
     <div className="ultimate">
       {s.ub.map((mini, b) => {
-        const active = !s.over && (s.active === null || s.active === b)
+        const active = !locked && !s.over && (s.active === null || s.active === b)
           && miniPlayable({ boards: s.ub, boardsWon: s.boardsWon, active: s.active }, b);
         const won = s.boardsWon[b];
         return (
@@ -301,7 +460,6 @@ function Ultimate({ s, onCell }: { s: State; onCell: (b: number, i: number) => v
   );
 }
 
-// brush stroke through the winning three — gold if Gold won, red if the Oracle/Cinnabar won — plus a contrasting seal
 function WinStroke({ line, who }: { line: number[]; who: Player }) {
   const c = (i: number) => ({ x: ((i % 3) + 0.5) / 3 * 100, y: (Math.floor(i / 3) + 0.5) / 3 * 100 });
   const a = c(line[0]), b = c(line[2]);
@@ -330,9 +488,7 @@ function Mark({ type, fading }: { type: Player; fading?: boolean }) {
   );
 }
 
-function Fog() {
-  return <div className="fog" aria-hidden="true"><span /><span /><span /></div>;
-}
+function Fog() { return <div className="fog" aria-hidden="true"><span /><span /><span /></div>; }
 function Defs() {
   return (
     <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">

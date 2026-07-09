@@ -1,0 +1,96 @@
+-- =====================================================================
+-- Tic-Tac-Toe — online multiplayer schema
+-- Run this in the Supabase SQL editor (one time).
+-- =====================================================================
+
+create table if not exists public.games (
+  id         uuid primary key default gen_random_uuid(),
+  code       text unique not null,
+  mode       text not null,
+  state      jsonb not null,
+  player_x   uuid,
+  player_o   uuid,
+  name_x     text,
+  name_o     text,
+  status     text not null default 'waiting',   -- waiting | live | ended
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.games enable row level security;
+
+-- Players may READ only the game they're part of. Realtime honours this.
+drop policy if exists "read own game" on public.games;
+create policy "read own game" on public.games
+  for select using (auth.uid() = player_x or auth.uid() = player_o);
+
+-- All writes go through the functions below (security definer), so there are
+-- no direct insert/update policies — clients can't hand-edit a board.
+
+-- ---- create a game; caller becomes Gold (X) --------------------------
+create or replace function public.create_game(p_code text, p_mode text, p_state jsonb, p_name text default null)
+returns public.games language plpgsql security definer as $$
+declare g public.games;
+begin
+  insert into public.games (code, mode, state, player_x, name_x, status)
+  values (p_code, p_mode, p_state, auth.uid(), nullif(p_name, ''), 'waiting')
+  returning * into g;
+  return g;
+end; $$;
+
+-- ---- join a waiting game; caller becomes Cinnabar (O) ----------------
+create or replace function public.join_game(p_code text, p_name text default null)
+returns public.games language plpgsql security definer as $$
+declare g public.games;
+begin
+  update public.games
+     set player_o = auth.uid(), name_o = nullif(p_name, ''), status = 'live'
+   where code = p_code
+     and player_o is null
+     and player_x is distinct from auth.uid()
+  returning * into g;
+  if g.id is null then raise exception 'Game % is full or unavailable', p_code; end if;
+  return g;
+end; $$;
+
+-- ---- make a move -----------------------------------------------------
+-- Enforces: caller is a participant, it is their turn, and the state is
+-- advancing from the ply they last saw (blocks out-of-turn / stale writes).
+-- The move's legality itself is computed client-side from the shared logic.
+create or replace function public.make_move(p_code text, p_state jsonb, p_from_ply int)
+returns void language plpgsql security definer as $$
+declare g public.games;
+begin
+  select * into g from public.games where code = p_code for update;
+  if g.id is null then raise exception 'No such game'; end if;
+
+  if auth.uid() is distinct from g.player_x
+     and auth.uid() is distinct from g.player_o then
+    raise exception 'Not a participant';
+  end if;
+
+  if (g.state->>'turn') = 'X' and auth.uid() is distinct from g.player_x then
+    raise exception 'Not your turn';
+  end if;
+  if (g.state->>'turn') = 'O' and auth.uid() is distinct from g.player_o then
+    raise exception 'Not your turn';
+  end if;
+
+  if (g.state->>'ply')::int is distinct from p_from_ply then
+    raise exception 'Stale move';
+  end if;
+
+  update public.games set
+    state = p_state,
+    status = case when (p_state->'over') is not null and (p_state->'over') <> 'null'::jsonb
+                  then 'ended' else 'live' end,
+    updated_at = now()
+  where code = p_code;
+end; $$;
+
+grant execute on function public.create_game(text, text, jsonb, text) to anon, authenticated;
+grant execute on function public.join_game(text, text)               to anon, authenticated;
+grant execute on function public.make_move(text, jsonb, int)         to anon, authenticated;
+
+-- ---- realtime --------------------------------------------------------
+alter publication supabase_realtime add table public.games;
