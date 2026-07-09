@@ -16,10 +16,7 @@ const MODES: { id: Mode; name: string; desc: string }[] = [
   { id: "ultimate",  name: "Ultimate",  desc: "Nine boards in one. Your move sends your rival on." },
 ];
 const oppLabel = (o: Opponent) =>
-  o === "oracle" ? "The Oracle" : o === "online" ? "Multiplayer" : "Pass & Play";
-
-// opponents you can cycle through (online only when Supabase is configured)
-const OPP_ORDER: Opponent[] = supabaseReady ? ["oracle", "human", "online"] : ["oracle", "human"];
+  o === "oracle" ? "The Oracle" : o === "online" ? "Online" : "Pass & Play";
 
 const CONGRATS = [
   "Three in a row. The board is yours.",
@@ -112,6 +109,7 @@ export default function Home() {
   const [playerName, setPlayerName] = useState("");
   const [invited, setInvited] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [mpChoosing, setMpChoosing] = useState(false);
   const [onlineBusy, setOnlineBusy] = useState(false);
   const [onlineErr, setOnlineErr] = useState("");
   const unsub = useRef<null | (() => void)>(null);
@@ -127,15 +125,19 @@ export default function Home() {
 
   // ---- navigation ----
   const clearOnline = () => { unsub.current?.(); unsub.current = null; setRoom(null); setJoinInput(""); setOnlineErr(""); };
-  const begin = () => { oracleActedPly.current = -1; clearOnline(); setS({ ...base, mode: MODES[idx].id, opponent: "oracle", screen: "play" }); };
-  const home = () => { clearOnline(); setS((st) => ({ ...st, screen: "landing" })); };
-  const reset = () => { oracleActedPly.current = -1; if (s.opponent === "online") clearOnline();
+  const begin = () => { oracleActedPly.current = -1; clearOnline(); setMpChoosing(false); setS({ ...base, mode: MODES[idx].id, opponent: "oracle", screen: "play" }); };
+  const home = () => { clearOnline(); setMpChoosing(false); setS((st) => ({ ...st, screen: "landing" })); };
+  const reset = () => { oracleActedPly.current = -1; setMpChoosing(false); if (s.opponent === "online") clearOnline();
     setS((st) => ({ ...base, mode: st.mode, opponent: st.opponent, screen: "play" })); };
   const setOpponentTo = (target: Opponent) => {
-    if (target === s.opponent) return;
     oracleActedPly.current = -1; clearOnline();
     setS((st) => ({ ...base, mode: st.mode, opponent: target, screen: "play" }));
   };
+  // grouped selection: The Oracle  vs  Multiplayer → { Online, Pass & Play }
+  const chooseOracle = () => { setMpChoosing(false); setOpponentTo("oracle"); };
+  const openMultiplayer = () => { clearOnline(); setMpChoosing(true); };
+  const chooseOnline = () => { setMpChoosing(false); setOpponentTo("online"); };
+  const chooseLocal = () => { setMpChoosing(false); setOpponentTo("human"); };
   useEffect(() => () => { unsub.current?.(); }, []);
 
   // ---- open a shared link → land on the online lobby with the code filled ----
@@ -295,6 +297,8 @@ export default function Home() {
     : goldTurn ? "Gold" : s.opponent === "oracle" ? "Oracle" : "Cinnabar";
   const vanishingIdx = s.mode === "vanishing" && !s.over && s.queue[s.turn].length === 3 ? s.queue[s.turn][0] : -1;
   const showLobby = s.opponent === "online" && (!room || room.status === "waiting");
+  const group: "oracle" | "mp" = s.opponent === "oracle" && !mpChoosing ? "oracle" : "mp";
+  const currentLabel = mpChoosing ? "Multiplayer" : oppLabel(s.opponent);
 
   return (
     <>
@@ -329,21 +333,32 @@ export default function Home() {
             <div className="mode-title">{s.mode}</div>
             <div className="tr">
               <div className="opp-others">
-                {OPP_ORDER.filter((o) => o !== s.opponent).map((o) => (
-                  <button key={o} className="oppToggle" onClick={() => setOpponentTo(o)}>{oppLabel(o)}</button>
-                ))}
+                {group === "oracle"
+                  ? <button className="oppToggle" onClick={openMultiplayer}>Multiplayer</button>
+                  : <button className="oppToggle" onClick={chooseOracle}>The Oracle</button>}
               </div>
               <div className="turn"><span className={`dot ${goldTurn ? "x" : "o"}`} /><span>{turnLabel}</span></div>
             </div>
           </div>
 
-          <div className="opp-current"><span className="ul">{oppLabel(s.opponent)}</span></div>
-          {s.opponent === "online" && room && room.status !== "waiting" && !s.over && (
+          <div className="opp-current">
+            {group === "mp" && !mpChoosing
+              ? <button className="ul ul-btn" onClick={() => setMpChoosing(true)}>{currentLabel}</button>
+              : <span className="ul">{currentLabel}</span>}
+          </div>
+          {s.opponent === "online" && room && room.status !== "waiting" && !s.over && !mpChoosing && (
             <div className="turn-hint">{myTurn ? "Your move" : "Their move"}</div>
           )}
 
           <div className="board-wrap">
-            {showLobby ? (
+            {mpChoosing ? (
+              <div className="chooser">
+                {supabaseReady && <button className="lobby-btn" onClick={chooseOnline}>Online</button>}
+                {supabaseReady && <div className="lobby-or">or</div>}
+                <button className="lobby-btn" onClick={chooseLocal}>Pass &amp; Play</button>
+                {!supabaseReady && <div className="lobby-sub">Online play isn&apos;t set up yet — Pass &amp; Play works on one device.</div>}
+              </div>
+            ) : showLobby ? (
               <Lobby room={room} joinInput={joinInput} setJoinInput={setJoinInput}
                 playerName={playerName} setPlayerName={setPlayerName} invited={invited}
                 onHost={hostGame} onJoin={joinRoom} onShare={shareLink} copied={copied}
@@ -355,7 +370,7 @@ export default function Home() {
             )}
           </div>
 
-          {!s.over && !showLobby && <button className="newgame" onClick={reset}>New game</button>}
+          {!s.over && !showLobby && !mpChoosing && <button className="newgame" onClick={reset}>New game</button>}
 
           {s.over && showEnd && (() => {
             const who = s.over.who;

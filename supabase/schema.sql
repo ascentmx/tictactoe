@@ -19,10 +19,13 @@ create table if not exists public.games (
 
 alter table public.games enable row level security;
 
--- Players may READ only the game they're part of. Realtime honours this.
+-- Reads are open; writes go only through the security-definer functions below.
+-- Open reads keep Supabase Realtime delivering reliably to BOTH players (an
+-- identity-based read policy silently drops the host's "someone joined" event).
+-- A game row holds only a board and two display names, behind an unguessable code.
 drop policy if exists "read own game" on public.games;
-create policy "read own game" on public.games
-  for select using (auth.uid() = player_x or auth.uid() = player_o);
+drop policy if exists "read games" on public.games;
+create policy "read games" on public.games for select using (true);
 
 -- All writes go through the functions below (security definer), so there are
 -- no direct insert/update policies — clients can't hand-edit a board.
