@@ -15,6 +15,7 @@ export type GameBlob = {
   metaLine: number[] | null;
   over: { who: Player | null; line?: number[] } | null;
   ply: number;
+  rid: number;
 };
 
 export type GameRow = {
@@ -58,6 +59,13 @@ export async function makeMove(code: string, state: GameBlob, fromPly: number): 
   const { error } = await supabase.rpc("make_move", {
     p_code: code, p_state: state, p_from_ply: fromPly,
   });
+  if (error) throw new Error(error.message);
+}
+
+// Reset the shared room to a fresh board. Either player may call it.
+export async function rematchGame(code: string, state: GameBlob): Promise<void> {
+  if (!supabase) throw new Error("Online play isn't configured yet.");
+  const { error } = await supabase.rpc("rematch_game", { p_code: code, p_state: state });
   if (error) throw new Error(error.message);
 }
 

@@ -6,7 +6,8 @@ import {
   winner, botMove3, ultimateBotMove, miniPlayable, UltimateState,
 } from "@/lib/game";
 import {
-  supabaseReady, createGame, joinGame, makeMove, subscribeGame, fetchGame, GameBlob, GameRow,
+  supabaseReady, createGame, joinGame, makeMove, subscribeGame, fetchGame, rematchGame,
+  GameBlob, GameRow,
 } from "@/lib/online";
 
 // ---------------------------------------------------------------------------
@@ -77,6 +78,7 @@ type State = {
   metaLine: number[] | null;
   over: Over;
   ply: number;
+  rid: number;   // round id — bumped on every rematch so peers adopt the reset board
 };
 type Room = { code: string; side: Player; status: "waiting" | "live" | "ended"; nameX: string | null; nameO: string | null };
 
@@ -85,13 +87,22 @@ const freshU = () => ({
   ub: Array.from({ length: 9 }, () => Array(9).fill(null) as Cell[]),
   boardsWon: Array(9).fill(null) as Cell[], active: null as number | null, metaLine: null as number[] | null,
 });
+// coin flip for who opens the board
+const firstTurn = (): Player => (Math.random() < 0.5 ? "X" : "O");
+
 const base: State = {
   screen: "landing", mode: "classic", opponent: "oracle", turn: "X",
-  ...fresh3(), ...freshU(), over: null, ply: 0,
+  ...fresh3(), ...freshU(), over: null, ply: 0, rid: 0,
 };
+// a cleared board for the next round: same mode, fresh pieces, new coin flip
+const freshRound = (st: State): State => ({
+  ...base, screen: "play", mode: st.mode, opponent: st.opponent,
+  turn: firstTurn(), rid: st.rid + 1,
+});
 const toBlob = (st: State): GameBlob => ({
   mode: st.mode, turn: st.turn, board: st.board, queue: st.queue,
-  ub: st.ub, boardsWon: st.boardsWon, active: st.active, metaLine: st.metaLine, over: st.over, ply: st.ply,
+  ub: st.ub, boardsWon: st.boardsWon, active: st.active, metaLine: st.metaLine,
+  over: st.over, ply: st.ply, rid: st.rid,
 });
 
 // ===========================================================================
@@ -126,13 +137,25 @@ export default function Home() {
 
   // ---- navigation ----
   const clearOnline = () => { unsub.current?.(); unsub.current = null; setRoom(null); setJoinInput(""); setOnlineErr(""); setForcePlay(false); };
-  const begin = () => { oracleActedPly.current = -1; clearOnline(); setMpChoosing(false); setS({ ...base, mode: MODES[idx].id, opponent: "oracle", screen: "play" }); };
+  const begin = () => { oracleActedPly.current = -1; clearOnline(); setMpChoosing(false);
+    setS({ ...base, mode: MODES[idx].id, opponent: "oracle", screen: "play", turn: firstTurn() }); };
   const home = () => { clearOnline(); setMpChoosing(false); setS((st) => ({ ...st, screen: "landing" })); };
-  const reset = () => { oracleActedPly.current = -1; setMpChoosing(false); if (s.opponent === "online") clearOnline();
-    setS((st) => ({ ...base, mode: st.mode, opponent: st.opponent, screen: "play" })); };
+  // New game / Rematch. Online keeps the room and resets the shared board in place.
+  const reset = () => {
+    oracleActedPly.current = -1; setMpChoosing(false);
+    const next = freshRound(s);
+    if (s.opponent === "online") {
+      if (!room) { clearOnline(); setS(next); return; }
+      setOnlineErr(""); setS(next);
+      rematchGame(room.code, toBlob(next))
+        .catch((e) => setOnlineErr(String((e as Error).message ?? e)));
+      return;
+    }
+    setS(next);
+  };
   const setOpponentTo = (target: Opponent) => {
     oracleActedPly.current = -1; clearOnline();
-    setS((st) => ({ ...base, mode: st.mode, opponent: target, screen: "play" }));
+    setS((st) => ({ ...base, mode: st.mode, opponent: target, screen: "play", turn: firstTurn() }));
   };
   // grouped selection: The Oracle  vs  Multiplayer → { Online, Pass & Play }
   const chooseOracle = () => { setMpChoosing(false); setOpponentTo("oracle"); };
@@ -205,7 +228,7 @@ export default function Home() {
     if (s.opponent === "online") {
       if (!canPlayOnline()) return;
       const next = commit3(s, i);
-      if (next !== s) { setS(next); makeMove(room!.code, toBlob(next), s.ply).catch((e) => setOnlineErr(String(e.message ?? e))); }
+      if (next !== s) { setOnlineErr(""); setS(next); makeMove(room!.code, toBlob(next), s.ply).catch(onMoveFail); }
       return;
     }
     if (!isOracleTurn) setS((st) => commit3(st, i));
@@ -215,10 +238,20 @@ export default function Home() {
     if (s.opponent === "online") {
       if (!canPlayOnline()) return;
       const next = commitU(s, b, i);
-      if (next !== s) { setS(next); makeMove(room!.code, toBlob(next), s.ply).catch((e) => setOnlineErr(String(e.message ?? e))); }
+      if (next !== s) { setOnlineErr(""); setS(next); makeMove(room!.code, toBlob(next), s.ply).catch(onMoveFail); }
       return;
     }
     if (!isOracleTurn) setS((st) => commitU(st, b, i));
+  };
+  // if a move is rejected by the server, show why and snap back to the true state
+  const onMoveFail = (e: unknown) => {
+    setOnlineErr(String((e as Error).message ?? e));
+    if (!room) return;
+    fetchGame(room.code).then((row) => {
+      if (!row) return;
+      setS((prev) => ({ ...prev, ...row.state }));
+      setRoom((r) => (r ? { ...r, status: row.status, nameX: row.name_x, nameO: row.name_o } : r));
+    }).catch(() => {});
   };
 
   // ---- Oracle replies after a short pause (local only) ----
@@ -258,14 +291,20 @@ export default function Home() {
 
   // ---- polling: the reliable sync path (works regardless of realtime config) ----
   useEffect(() => {
-    if (s.opponent !== "online" || !room || s.over) return;
+    // keep polling even after the game ends, so the other player's rematch arrives
+    if (s.opponent !== "online" || !room) return;
     let active = true;
     const tick = async () => {
       try {
         const row = await fetchGame(room.code);
         if (!active || !row) return;
-        // only adopt server state if it's not older than what we already show
-        setS((prev) => (row.state.ply >= prev.ply ? { ...prev, ...row.state } : prev));
+        // adopt server state if it's a newer round, or the same round no older than ours
+        setS((prev) => {
+          const inc = row.state;
+          const incRid = inc.rid ?? 0, curRid = prev.rid ?? 0;
+          const newer = incRid > curRid || (incRid === curRid && inc.ply >= prev.ply);
+          return newer ? { ...prev, ...inc } : prev;
+        });
         setRoom((r) => (r ? { ...r, status: row.status, nameX: row.name_x, nameO: row.name_o } : r));
       } catch { /* transient — next tick retries */ }
     };
@@ -273,7 +312,7 @@ export default function Home() {
     const id = setInterval(tick, 1500);
     return () => { active = false; clearInterval(id); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.opponent, room?.code, s.over]);
+  }, [s.opponent, room?.code]);
 
   // ---- online: apply incoming rows ----
   const startSub = (code: string) => {
@@ -287,7 +326,7 @@ export default function Home() {
   const hostGame = async () => {
     setOnlineBusy(true); setOnlineErr("");
     try {
-      const blob = toBlob({ ...base, mode: s.mode });
+      const blob = toBlob({ ...base, mode: s.mode, turn: firstTurn() });
       const nm = playerName.trim();
       const { code } = await createGame(blob, nm);
       setS((prev) => ({ ...prev, ...blob }));
@@ -370,6 +409,9 @@ export default function Home() {
           {s.opponent === "online" && room && room.status !== "waiting" && !s.over && !mpChoosing && (
             <div className="turn-hint">{myTurn ? "Your move" : "Their move"}</div>
           )}
+          {s.opponent === "online" && onlineErr && !showLobby && !mpChoosing && (
+            <div className="net-err">{onlineErr}</div>
+          )}
 
           <div className="board-wrap">
             {mpChoosing ? (
@@ -408,7 +450,12 @@ export default function Home() {
                   <div className={`endresult ${tone}`}>{headline}</div>
                   <p className="endmsg">{endMsg}</p>
                   <div className="endactions">
-                    <button className="endnew" onClick={reset}>New game</button>
+                    <button className="endnew" onClick={reset}>
+                      {s.opponent === "online" ? "Rematch" : "New game"}
+                    </button>
+                    {s.opponent === "online" && room && (
+                      <div className="endnote">Same room · {room.code}</div>
+                    )}
                     <button className="endhome" onClick={home}>‹ Home</button>
                   </div>
                 </div>

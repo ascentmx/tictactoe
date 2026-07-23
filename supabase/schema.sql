@@ -102,7 +102,28 @@ begin
   where code = p_code;
 end; $$;
 
+-- ---- rematch ---------------------------------------------------------
+-- Either player can reset the room to a fresh board, keeping both seats.
+-- No turn check: a rematch is allowed from any position.
+create or replace function public.rematch_game(p_code text, p_state jsonb)
+returns void language plpgsql security definer as $$
+declare g public.games;
+begin
+  select * into g from public.games where code = p_code for update;
+  if g.id is null then raise exception 'No such game'; end if;
+
+  if auth.uid() is distinct from g.player_x
+     and auth.uid() is distinct from g.player_o then
+    raise exception 'Not a participant';
+  end if;
+
+  update public.games
+     set state = p_state, status = 'live', updated_at = now()
+   where id = g.id;
+end; $$;
+
 grant execute on function public.create_game(text, text, jsonb, text) to anon, authenticated;
+grant execute on function public.rematch_game(text, jsonb)           to anon, authenticated;
 grant execute on function public.join_game(text, text)               to anon, authenticated;
 grant execute on function public.make_move(text, jsonb, int)         to anon, authenticated;
 
